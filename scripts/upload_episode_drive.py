@@ -23,6 +23,7 @@ else:
  r.raise_for_status();f=r.json()
 assert int(f['size'])==size and f['md5Checksum']==md5.hexdigest(),'Drive size/checksum mismatch'
 r=requests.get(api+'/'+f['id'],headers=h,params={'fields':'id,name,size,md5Checksum,webViewLink,permissions(type,role,emailAddress)'},timeout=30);r.raise_for_status();f=r.json();assert not any(p['type'] in ['anyone','domain'] for p in f.get('permissions',[]))
+f.pop('permissions',None)
 report={'source_url':url,'sha256':sha.hexdigest(),'bytes':size,'md5':md5.hexdigest(),'drive':f,'folder_id':folder}
 open('upload-result.json','w').write(json.dumps(report,indent=2));print(json.dumps(report,indent=2))
 with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as out:out.write('Verified original episode uploaded privately: '+f['webViewLink']+'\n\nSHA-256: `'+sha.hexdigest()+'`\n')
