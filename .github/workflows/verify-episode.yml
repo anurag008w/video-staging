@@ -1,0 +1,16 @@
+name: Verify episode master
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download original episode and verify exact bytes
+        run: |
+          curl --fail --location --retry 2 --output episode.mp4 'https://github.com/anurag008w/video-staging/releases/download/chem-ep1-pehchaan-v2/Chem_Ep1_Pehchaan_FINAL_v2.mp4'
+          echo 'c6d055fa0ccb2c57c19ade926cfaca3da84332ad936e29052152348b388f3dc8  episode.mp4' | sha256sum --check
+          test "$(stat -c %s episode.mp4)" = '140617371'
+          echo 'Original master download and SHA-256 verified.' >> "$GITHUB_STEP_SUMMARY"
