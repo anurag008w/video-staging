@@ -1,0 +1,100 @@
+name: YouTube private upload
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Validate credential only, or upload an approved video privately
+        required: true
+        default: validate
+        type: choice
+        options: [validate, upload-private]
+      source_url:
+        description: Approved video GitHub release asset URL
+        type: string
+      sha256:
+        description: Expected approved video SHA256
+        type: string
+      title:
+        description: Approved video title
+        type: string
+permissions: {}
+concurrency:
+  group: youtube-private-upload
+  cancel-in-progress: false
+jobs:
+  upload:
+    if: github.ref == 'refs/heads/main' && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Validate or upload privately
+        env:
+          OAUTH: ${{ secrets.HRIDAY52_YOUTUBE_OAUTH }}
+          MODE: ${{ inputs.mode }}
+          SOURCE: ${{ inputs.source_url }}
+          EXPECTED_SHA: ${{ inputs.sha256 }}
+          TITLE: ${{ inputs.title }}
+        shell: python
+        run: |
+          import hashlib, json, os, re, sys, tempfile
+          import urllib.request as req
+          import urllib.parse as parse
+          import urllib.error as err
+          import http.client
+          def safe_json(request):
+              try:
+                  with req.urlopen(request, timeout=90) as r:
+                      return json.load(r)
+              except err.HTTPError as e:
+                  raise RuntimeError('Service request failed: HTTP '+str(e.code)) from None
+          c=json.loads(os.environ['OAUTH'])
+          for key in ['client_id','client_secret','refresh_token','channel_id']:
+              assert c.get(key), 'Missing credential field'
+          data=parse.urlencode(dict(client_id=c['client_id'],client_secret=c['client_secret'],refresh_token=c['refresh_token'],grant_type='refresh_token')).encode()
+          t=safe_json(req.Request('https://oauth2.googleapis.com/token',data=data))
+          assert t.get('access_token'), 'Refresh failed'
+          assert t.get('scope','').split()==['https://www.googleapis.com/auth/youtube.upload'], 'Unexpected scope'
+          print('Credential refresh succeeded. No account or credential data logged.')
+          if os.environ['MODE']=='validate':
+              sys.exit(0)
+          assert os.environ['MODE']=='upload-private'
+          u=parse.urlparse(os.environ['SOURCE'])
+          assert u.scheme=='https' and u.netloc=='github.com' and u.path.startswith('/'+os.environ['GITHUB_REPOSITORY']+'/releases/download/'), 'Source must be a release asset in this repository'
+          expected=os.environ['EXPECTED_SHA'].lower()
+          assert re.fullmatch('[0-9a-f]{64}',expected), 'SHA256 required'
+          title=os.environ['TITLE'].strip()
+          assert title and len(title)<=100, 'Approved title required'
+          with tempfile.TemporaryDirectory() as folder:
+              path=folder+'/video.mp4'
+              h=hashlib.sha256()
+              with req.urlopen(os.environ['SOURCE'],timeout=90) as src, open(path,'wb') as f:
+                  while True:
+                      b=src.read(1024*1024)
+                      if not b: break
+                      h.update(b); f.write(b)
+              assert h.hexdigest()==expected, 'Video hash mismatch'
+              metadata={'snippet':{'title':title,'categoryId':'22'},'status':{'privacyStatus':'private','selfDeclaredMadeForKids':False}}
+              headers={'Authorization':'Bearer '+t['access_token'],'Content-Type':'application/json','X-Upload-Content-Type':'video/mp4','X-Upload-Content-Length':str(os.path.getsize(path))}
+              r=req.Request('https://www.googleapis.com/upload/youtube/v3/videos?part=snippet,status&uploadType=resumable',data=json.dumps(metadata).encode(),headers=headers)
+              try:
+                  with req.urlopen(r,timeout=90) as response: location=response.headers['Location']
+              except err.HTTPError as e:
+                  raise RuntimeError('Upload initialization failed: HTTP '+str(e.code)) from None
+              endpoint=parse.urlparse(location)
+              assert endpoint.scheme=='https' and endpoint.hostname in ['www.googleapis.com','upload.youtube.com'], 'Unexpected upload host'
+              conn=http.client.HTTPSConnection(endpoint.hostname,timeout=1800)
+              conn.putrequest('PUT',endpoint.path+('?' + endpoint.query if endpoint.query else ''))
+              conn.putheader('Content-Type','video/mp4')
+              conn.putheader('Content-Length',str(os.path.getsize(path)))
+              conn.endheaders()
+              with open(path,'rb') as f:
+                  while True:
+                      b=f.read(4*1024*1024)
+                      if not b: break
+                      conn.send(b)
+              response=conn.getresponse()
+              assert response.status in [200,201], 'Upload transfer failed; inspect Studio before retrying'
+              result=json.loads(response.read())
+              assert result['snippet']['channelId']==c['channel_id'], 'Channel mismatch; stop and inspect Studio'
+              assert result['status']['privacyStatus']=='private', 'Visibility mismatch'
+              print('Private upload completed. Inspect owner Studio for the new video. Never retry blindly.')
