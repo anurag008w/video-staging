@@ -45,8 +45,14 @@ else:
     subprocess.run(['qpdf', '--empty', '--pages'] + order + ['--', 'merged.pdf'], check=True)
     out = 'merged.pdf'
 
-info = subprocess.run(['qpdf', '--show-npages', out], capture_output=True, text=True, check=True).stdout.strip()
-pages = int(info)
+q = subprocess.run(['qpdf', '--show-npages', out], capture_output=True, text=True)
+if q.returncode == 0:
+    pages = int(q.stdout.strip())
+else:
+    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'pypdf'], check=True)
+    from pypdf import PdfReader
+    pages = len(PdfReader(out).pages)
+print('pages', pages)
 assert open(out, 'rb').read(5) == b'%PDF-'
 if pages_expected:
     assert pages == pages_expected, f'page count {pages} != {pages_expected}'
