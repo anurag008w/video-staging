@@ -19,8 +19,9 @@ on:
         required: true
         type: string
       folder_id:
-        description: Destination Drive folder ID
-        required: true
+        description: Optional destination folder ID (blank = app-owned staging folder)
+        required: false
+        default: ''
         type: string
       folder_name:
         description: Expected destination folder name
