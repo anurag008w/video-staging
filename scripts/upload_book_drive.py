@@ -5,12 +5,12 @@ url = os.environ['SOURCE_URL']
 kind = os.environ['KIND']                      # pdf | ncert_zip
 src_sha = os.environ['SOURCE_SHA256'].lower()
 pages_expected = int(os.environ.get('EXPECTED_PAGES') or 0)
-folder = os.environ['FOLDER_ID']
+folder = os.environ.get('FOLDER_ID', '')
 folder_name = os.environ['FOLDER_NAME']
 name = os.environ['FILE_NAME']
 assert url.startswith(('https://ncert.nic.in/textbook/pdf/', 'https://books.ebalbharati.in/pdfs/'))
 assert re.fullmatch(r'[0-9a-f]{64}', src_sha)
-assert re.fullmatch(r'[A-Za-z0-9_-]{20,60}', folder)
+assert folder == '' or re.fullmatch(r'[A-Za-z0-9_-]{20,60}', folder)
 
 def sha256(p):
     h = hashlib.sha256()
@@ -60,11 +60,23 @@ if r.status_code != 200:
     sys.exit('Drive credential rejected by Google token endpoint: HTTP %s error=%s description=%s keys_present=%s' % (r.status_code, e.get('error'), e.get('error_description'), sorted(c.keys())))
 h = {'Authorization': 'Bearer ' + r.json()['access_token']}
 api = 'https://www.googleapis.com/drive/v3/files'
-r = requests.get(api + '/' + folder, headers=h, params={'fields': 'id,name,mimeType,ownedByMe,trashed'}, timeout=30)
-assert r.status_code == 200, f'destination folder not visible to credential (HTTP {r.status_code})'
-fm = r.json()
-assert fm['mimeType'] == 'application/vnd.google-apps.folder' and fm['name'] == folder_name and fm['ownedByMe'] and not fm['trashed'], 'destination folder check failed'
-print('destination folder verified: name matches, owned by credential account')
+if folder:
+    r = requests.get(api + '/' + folder, headers=h, params={'fields': 'id,name,mimeType,ownedByMe,trashed'}, timeout=30)
+    assert r.status_code == 200, f'destination folder not visible to credential (HTTP {r.status_code})'
+    fm = r.json()
+    assert fm['mimeType'] == 'application/vnd.google-apps.folder' and fm['name'] == folder_name and fm['ownedByMe'] and not fm['trashed'], 'destination folder check failed'
+else:
+    # drive.file mode: find or create an app-owned staging folder by name
+    r = requests.get(api, headers=h, params={'q': f"trashed=false and mimeType='application/vnd.google-apps.folder' and name='{folder_name}'", 'fields': 'files(id,name,ownedByMe)'}, timeout=30)
+    r.raise_for_status()
+    fs = [f for f in r.json()['files'] if f.get('ownedByMe')]
+    if fs:
+        folder = fs[0]['id']
+    else:
+        r = requests.post(api, headers=h, json={'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder'}, timeout=30)
+        r.raise_for_status()
+        folder = r.json()['id']
+print('destination folder verified/created')
 
 r = requests.get(api, headers=h, params={'q': f"trashed=false and '{folder}' in parents", 'fields': 'files(id,name,size,md5Checksum)'}, timeout=30)
 r.raise_for_status()
@@ -87,6 +99,6 @@ assert int(f['size']) == size and f['md5Checksum'] == md5, 'Drive size/MD5 misma
 r = requests.get(api + '/' + f['id'], headers=h, params={'fields': 'permissions(type,role)'}, timeout=30)
 r.raise_for_status()
 assert not any(p['type'] in ('anyone', 'domain') for p in r.json().get('permissions', [])), 'file is shared more widely than private'
-res = {'name': name, 'bytes': size, 'md5': md5, 'pages': pages, 'private': True}
-print(json.dumps(res, indent=1))
+res = {'folder_id': folder, 'file_id': f['id'], 'name': name, 'bytes': size, 'md5': md5, 'pages': pages, 'private': True}
+print(json.dumps({k: v for k, v in res.items() if k not in ('folder_id', 'file_id')}, indent=1))
 open('upload-result.json', 'w').write(json.dumps(res))
