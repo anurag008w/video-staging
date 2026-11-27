@@ -55,7 +55,9 @@ md5 = hashlib.md5(open(out, 'rb').read()).hexdigest()
 
 c = json.loads(os.environ['DRIVE_CREDENTIAL'])
 r = requests.post('https://oauth2.googleapis.com/token', data={**c, 'grant_type': 'refresh_token'}, timeout=30)
-r.raise_for_status()
+if r.status_code != 200:
+    e = r.json() if 'json' in r.headers.get('content-type', '') else {}
+    sys.exit('Drive credential rejected by Google token endpoint: HTTP %s error=%s description=%s keys_present=%s' % (r.status_code, e.get('error'), e.get('error_description'), sorted(c.keys())))
 h = {'Authorization': 'Bearer ' + r.json()['access_token']}
 api = 'https://www.googleapis.com/drive/v3/files'
 r = requests.get(api + '/' + folder, headers=h, params={'fields': 'id,name,mimeType,ownedByMe,trashed'}, timeout=30)
